@@ -1,0 +1,248 @@
+############################ RNA #################################
+############## PCA  ################
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
+  column_to_rownames("Geneid") %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
+dat = log2(dat+1)
+pca.res <- PCA(t(dat), scale.unit = TRUE, ncp = 5, graph = FALSE)
+
+coord <- as.data.frame(pca.res$ind$coord) %>% mutate(Sample = rownames(.)) %>%
+  mutate(Group = str_remove_all(Sample,"_.*"))
+
+P132 = ggplot(coord %>% mutate(Group=factor(Group,levels=c("E","H","V"))), 
+              aes(x = Dim.1, y = Dim.2, color = Group)) +
+  geom_point(size = 3) +
+  labs(x = sprintf("PC1 (%.1f%%)", pca.res$eig[1, 2]),
+       y = sprintf("PC2 (%.1f%%)", pca.res$eig[2, 2]),
+       title = "PCA of RNA-seq log2(TPM+1)") +
+  ggthemes::theme_few()+
+  theme(axis.text = element_text(color = "black", size = 9),
+        axis.title = element_text(size = 9),
+        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+        plot.title = element_text(size=9, hjust=0.5)) +
+  scale_color_manual(values = colorlist)
+ggsave(P132, filename = "RNA-PCA-2D-log2-TPM.pdf", height = 2.3, width = 3)
+
+###### E vs H ######
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/readCount.txt") %>%
+  dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
+  column_to_rownames("Geneid") %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
+mid <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt")
+library(DESeq2)
+dat3 <- dat %>% dplyr::select(contains("E") | contains("H"))
+colData <- data.frame(row.names=colnames(dat3),
+                      condition=colnames(dat3) %>% str_remove_all("_.*") %>% factor(.,levels=c("E","H")))
+dat3 = dat3[rowSums(dat3) >  10,]
+dds <- DESeqDataSetFromMatrix(dat3, colData, design= ~ condition)
+keep <- rowSums(counts(dds) >= 10) >= 2
+dds <- dds[keep, ]
+dds <- DESeq(dds)
+res = results(dds, contrast=c("condition","H", "E")) %>% data.frame(check.names = F)
+tempOutput = res[order(res$pvalue),] %>% data.frame(check.names = F) %>%
+  mutate(fdr = p.adjust(pvalue,method="BH",n = nrow(.)))
+logFC_cutoff <- 1
+tempOutput$change <-  ifelse((tempOutput$padj < 0.05 | tempOutput$fdr < 0.05) & abs(tempOutput$log2FoldChange) > logFC_cutoff,
+                             ifelse(tempOutput$log2FoldChange > logFC_cutoff ,'H','E'),'NOT')
+tempOutput2 = tempOutput %>% data.frame(check.names = F) %>% rownames_to_column("Geneid") %>%
+  merge(mid,by="Geneid")
+write.csv(tempOutput2, file = "RNA-01-DEGs-EvsH.DESeq2.csv")
+
+######  E vs H ########
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1)
+p21 <- ggplot(deg %>% filter(!is.na(padj)) %>% mutate(change=factor(change,levels=c("H","E","NOT"))),
+              aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = change), alpha = 0.8, size = 1.2) +
+  scale_color_manual(values = c(H = "#ab586c", E = "#9ebeb9", NOT = "grey90")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
+  labs(x = "log2 fold change", y = "-log10(FDR)", title = "E vs H") +
+  ggthemes::theme_few() +
+  theme(axis.text = element_text(color='black',size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"),
+        plot.title = element_text(hjust = 0.5, size = 9)) +
+  guides(color = guide_legend(override.aes = list(size=3)))
+ggsave(p21, filename="RNA-01-DEGs-EvsH.Volcano.pdf", height = 2.3, width = 3)
+
+############## AS #############
+setwd("/mnt/sdd/Data_Lei/20250620A_Smartseq2_cow_report/data/Splice/File_AS_H_B_vs_E_B/")
+nSE  <- system("cat EvsH_filtering/filtered_SE.MATS.JC.txt | wc -l ", intern = TRUE)
+nA5SS <- system("cat EvsH_filtering/filtered_A5SS.MATS.JC.txt | wc -l ", intern = TRUE)
+nA3SS <- system("cat EvsH_filtering/filtered_A3SS.MATS.JC.txt | wc -l ", intern = TRUE)
+nMXE  <- system("cat EvsH_filtering/filtered_MXE.MATS.JC.txt | wc -l ", intern = TRUE)
+nRI   <- system("cat EvsH_filtering/filtered_RI.MATS.JC.txt | wc -l ", intern = TRUE)
+Prop  <- c(SE = as.integer(nSE)-1, A5SS = as.integer(nA5SS)-1,
+           A3SS = as.integer(nA3SS)-1, MXE = as.integer(nMXE)-1, RI = as.integer(nRI)-1)
+
+df = data.frame(Prop) %>% rownames_to_column("type") %>%
+  mutate(label_value=paste('(n=',nums,",", round(nums/sum(nums) * 100, 1), '%)', sep = '')) %>%
+  mutate(label=paste(type, label_value, sep = '')) %>%
+  arrange(nums) %>% mutate(label=factor(label,levels=rev(.$label)))
+
+p12 <- ggplot(data = df, mapping = aes(x = 'Content', y = nums, fill = label)) +
+  geom_bar(stat = 'identity', position = 'stack',color="black") +
+  coord_polar(theta = 'y') +
+  labs(x = '', y = '', title = '') +
+  theme_void() +
+  scale_fill_manual(values = colorlist)
+ggsave(p12, filename="../../RNA-06-AS-EvsH-filtering.PiePlot.pdf", height = 3, width = 4)
+
+############## TE #############
+setwd("/mnt/sdd/Data_Lei/RNA-seq/RNA/20250324_A22MH7MLT4_U3120_ZLZ/RawData")
+gtffile = fread("TEtranscripts_TE.gtf")
+# ...（中间处理省略）...
+deg <- read.csv("RNA-07-TE-EvsH.csv",row.names = 1)
+p21 <- ggplot(deg %>% filter(!is.na(padj)) %>% mutate(change=factor(change,levels=c("H","E","NOT"))),
+              aes(x = log2FoldChange, y = -log10(padj))) +
+  geom_point(aes(color = change), alpha = 0.8, size = 1.2) +
+  scale_color_manual(values = c(H = "#ab586c", E = "#9ebeb9", NOT = "grey90")) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
+  labs(x = "log2 fold change", y = "-log10(FDR)", title = "TE E vs H") +
+  ggthemes::theme_few() +
+  theme(axis.text = element_text(color='black',size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"),
+        plot.title = element_text(hjust = 0.5, size = 9)) +
+  guides(color = guide_legend(override.aes = list(size=3)))
+ggsave(p21, filename="RNA-07-TE-EvsH.Volcano.pdf", height = 2.3, width = 3)
+
+############################ Methylation #################################
+############## Basic information ##############
+dat = fread("20250528B_trio-WGBS_report/src/Align/BSConvertRate_summary.xls")
+p214 = ggplot(dat, aes(`BSconvertRate(%)`, Sample, color=Sample)) +
+  geom_segment(aes(x=0, xend=`BSconvertRate(%)`, y=Sample, yend=Sample), color="black", linetype=2) +
+  geom_point(size=3) +
+  ggthemes::theme_few() +
+  theme(legend.position = "none",
+        axis.text = element_text(color = "black", size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA, color="black", size=1.2, linetype="solid")) +
+  labs(x="BS convert rate (%)", y="") +
+  scale_color_manual(values = colorlist)
+ggsave(p214, filename="Methy-01-BasicInformation-BSconvert.pdf", height = 3, width = 2)
+
+############## DMR #############
+dat <- fread("20250528B_trio-WGBS_report/src/DMR/DMRQV_CG.H_B_vs_E_B") %>%
+  mutate(delta_mC = H_B - E_B) %>%
+  mutate(change = if_else(QV > 0.05, "n.s.",
+                          if_else(delta_mC >= 0.1, "Hyper",
+                                  if_else(delta_mC <= -0.1, "Hypo", "n.s.")))) %>%
+  filter(numC > 3) %>%
+  mutate(change2 = if_else(change == "Hyper", "Hyper 19736",
+                           if_else(change == "Hypo", "Hypo 103773", "n.s."))) %>%
+  mutate(change2 = factor(change2, levels = c("Hyper 19736", "Hypo 103773", "n.s.")))
+
+p21 <- ggplot(dat, aes(x = delta_mC, y = -log10(QV))) +
+  geom_point(aes(color = change2), alpha = 0.8, size = 0.5) +
+  scale_color_manual(values = c("#ab586c", "#9ebeb9", "grey90")) +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed", color = "black", linewidth = 0.3) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
+  labs(x = "delta CpG methylation level", y = "-log10(q value)", title = "H vs E") +
+  ggthemes::theme_few() +
+  theme(axis.text = element_text(color='black', size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA, color="black", size=1, linetype="solid"),
+        plot.title = element_text(hjust = 0.5, size = 9)) +
+  guides(color = guide_legend(override.aes = list(size=3)))
+ggsave(p21, filename="Methy-05-DMR-HvsE-Overall.Volcano.pdf", height = 2.3, width = 3.6)
+
+#### Methylation vs Expression Venn (H vs E, Promoter)
+DEG.H <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1) %>% filter(change == "H")
+DEG.E <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1) %>% filter(change == "E")
+
+peakAnno.H <- qread("Methy-05-DMR-HvsE-Hyper.Anno.qs")   # Hyper in H
+peakAnno.E <- qread("Methy-05-DMR-HvsE-Hypo.Anno.qs")    # Hypo  in H → Hyper in E
+
+geneM.H <- peakAnno.H@anno %>% data.frame() %>% filter(str_detect(annotation, "Promoter")) %>% pull(geneId) %>% unique()
+geneM.E <- peakAnno.E@anno %>% data.frame() %>% filter(str_detect(annotation, "Promoter")) %>% pull(geneId) %>% unique()
+
+library(ggvenn)
+vennlist <- list(E_H = DEG.H$genename,
+                 E_E = DEG.E$genename,
+                 M_H = geneM.H,
+                 M_E = geneM.E)
+Pvenn <- ggvenn(vennlist,
+                fill_color  = colorlist,
+                stroke_size = 0.5,
+                show_percentage = TRUE,
+                digits = 1)
+ggsave(Pvenn, filename = "Methy-06-HvsE-Promoter-Methy-Exp-Venn.pdf", height = 3, width = 5)
+
+#### Extract 4-way intersections
+A <- vennlist$E_H
+B <- vennlist$E_E
+C <- vennlist$M_H
+D <- vennlist$M_E
+
+ABCD <- Reduce(intersect, list(A, B, C, D))   # 四组共有
+ABC  <- setdiff(Reduce(intersect, list(A, B, C)), D)
+ABD  <- setdiff(Reduce(intersect, list(A, B, D)), C)
+ACD  <- setdiff(Reduce(intersect, list(A, C, D)), B)
+BCD  <- setdiff(Reduce(intersect, list(B, C, D)), A)
+
+AB <- setdiff(intersect(A, B), union(C, D))
+AC <- setdiff(intersect(A, C), union(B, D))
+AD <- setdiff(intersect(A, D), union(B, C))
+BC <- setdiff(intersect(B, C), union(A, D))
+BD <- setdiff(intersect(B, D), union(A, C))
+CD <- setdiff(intersect(C, D), union(A, B))
+
+Aonly <- setdiff(A, union(B, union(C, D)))
+Bonly <- setdiff(B, union(A, union(C, D)))
+Conly <- setdiff(C, union(A, union(B, D)))
+Donly <- setdiff(D, union(A, union(B, C)))
+
+vennParts <- list(E_H_M_E  = ACD,   # 表达H + 甲基E
+                  E_E_M_H  = BCD,   # 表达E + 甲基H
+                  AllFour  = ABCD,
+                  E_H_only = Aonly,
+                  E_E_only = Bonly,
+                  M_H_only = Conly,
+                  M_E_only = Donly)
+qsave(vennParts, file = "Methy-06-HvsE-Promoter-Methy-Exp-Venn.qs")
+
+#### Heatmap: Expression + Methylation (E-H-M-E genes)
+genes <- vennParts$E_H_M_E
+
+# expression
+expr <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(genename, contains("_")) %>%
+  column_to_rownames("genename") %>%
+  dplyr::select(-gene_biotype, -E_B_4, -contains("V_"))
+expr <- expr[genes, ] %>% log2(1 + .)
+expr.z <- t(scale(t(expr)))
+
+# methylation
+dmr <- fread("20250528B_trio-WGBS_report/src/DMR/DMRQV_CG.H_B_vs_E_B") %>%
+  mutate(id = paste(Chr, start, end, sep = "_")) %>%
+  dplyr::select(id, H_B, E_B)
+
+peakAnno <- qread("Methy-05-DMR-HvsE-Hypo.Anno.qs")   # Hypo in H → Hyper in E
+prom <- peakAnno@anno %>% data.frame() %>%
+  filter(str_detect(annotation, "Promoter")) %>%
+  filter(geneId %in% genes) %>%
+  mutate(id = paste(seqnames, start - 1, end, sep = "_")) %>%
+  dplyr::select(id, geneId)
+
+meth <- dmr %>% inner_join(prom, by = "id") %>% arrange(geneId) %>% column_to_rownames("geneId")
+meth <- meth %>% dplyr::select(E_B, H_B)
+
+library(ComplexHeatmap)
+library(circlize)
+col_fun_expr  <- colorRamp2(c(-2, 0, 2), c("#5E4FA2", "white", "#b42e20"))
+col_fun_meth  <- colorRamp2(c(0, 0.8), c("#ffe4e1", "#8b0000"))
+
+ht_expr <- Heatmap(expr.z, name = "Z-score", col = col_fun_expr,
+                   cluster_rows = TRUE, cluster_columns = FALSE,
+                   show_row_names = FALSE, column_split = c("E","H"))
+ht_meth <- Heatmap(meth,  name = "mCpG",    col = col_fun_meth,
+                   cluster_rows = TRUE, cluster_columns = FALSE,
+                   show_row_names = FALSE)
+
+pdf("Methy-06-HvsE-Promoter-Methy-Exp-E_H_M_E-Heatmap.pdf", width = 4, height = 3)
+draw(ht_expr + ht_meth, gap = unit(5, "mm"))
+dev.off()
+
