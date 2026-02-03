@@ -1,29 +1,95 @@
+### This is the code for SmartSeq2 data analysis of Cow embryo (E_B, H_B, V_B) ###
+### By Qingren Meng & Qian Zhou ###
+
 ############################ RNA #################################
 ############## PCA  ################
+# Load RNA-seq TPM data and process
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
+  column_to_rownames("Geneid") %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
+
+# Log transformation
+dat = log2(dat+1)
+
+# Perform PCA
+pca.res <- PCA(t(dat),               # Function requires rows as samples
+               scale.unit = TRUE,    # Scale columns
+               ncp = 5,              # Keep 5 dimensions
+               graph = FALSE)
+
+coord <- as.data.frame(pca.res$ind$coord) %>% mutate(Sample = rownames(.)) %>%
+  mutate(Group = str_remove_all(Sample,"_.*"))
+
+# Plot 2D PCA
+library(ggplot2)
+P132 = ggplot(coord %>% mutate(Group=factor(Group,levels=c("E","H","V"))), 
+              aes(x = Dim.1, y = Dim.2, color = Group)) +
+  geom_point(size = 3) +
+  #stat_ellipse(level = 0.95, linetype = 2) +
+  labs(x = sprintf("PC1 (%.1f%%)", pca.res$eig[1, 2]),
+       y = sprintf("PC2 (%.1f%%)", pca.res$eig[2, 2]),
+       title = "PCA of RNA-seq log2(TPM+1)") +
+  #theme_minimal(base_size = 9)+
+  ggthemes::theme_few()+
+  theme(#legend.position = "bottom",
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(size=9), 
+    axis.text.y = element_text(size=9),
+    #axis.ticks = element_text(color="black"),
+    axis.title = element_text(size=9),
+    panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+    legend.title = element_text(size=9),
+    plot.title = element_text(size=9,hjust=0.5),
+    legend.text = element_text(size=9))+
+  scale_color_manual("",values = colorlist)
+ggsave(P132,filename = "RNA-PCA-2D-log2-TPM.pdf",height = 2.3,width = 3)
+
+# Plot 3D PCA
+library(plotly); library(htmlwidgets)
+p <- plot_ly(
+  coord %>% mutate(Group=factor(Group,levels=c("E","H","V"))), x = ~Dim.1, y = ~Dim.2, z = ~Dim.3,
+  color = ~Group, colors = colorlist,
+  type = "scatter3d", mode = "markers",
+  marker = list(size = 3, opacity = 0.8)
+)
+p
+saveWidget(as_widget(p), "RNA-PCA-3D-log2-TPM.html", selfcontained=TRUE)
+
+############## Correlation Heatmap ##########
 dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
   dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
   column_to_rownames("Geneid") %>%
   dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
 dat = log2(dat+1)
-pca.res <- PCA(t(dat), scale.unit = TRUE, ncp = 5, graph = FALSE)
 
-coord <- as.data.frame(pca.res$ind$coord) %>% mutate(Sample = rownames(.)) %>%
-  mutate(Group = str_remove_all(Sample,"_.*"))
+library(ComplexHeatmap)
+library(circlize)        # Colors
+library(matrixStats)     # Matrix operations
+library(viridis)         # Color palettes
+library()
 
-P132 = ggplot(coord %>% mutate(Group=factor(Group,levels=c("E","H","V"))), 
-              aes(x = Dim.1, y = Dim.2, color = Group)) +
-  geom_point(size = 3) +
-  labs(x = sprintf("PC1 (%.1f%%)", pca.res$eig[1, 2]),
-       y = sprintf("PC2 (%.1f%%)", pca.res$eig[2, 2]),
-       title = "PCA of RNA-seq log2(TPM+1)") +
-  ggthemes::theme_few()+
-  theme(axis.text = element_text(color = "black", size = 9),
-        axis.title = element_text(size = 9),
-        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
-        plot.title = element_text(size=9, hjust=0.5)) +
-  scale_color_manual(values = colorlist)
-ggsave(P132, filename = "RNA-PCA-2D-log2-TPM.pdf", height = 2.3, width = 3)
+col_fun <- colorRamp2(c(0.8,0.9, 1), c("white","#FF4E4E", "#BB3333"))
+expr <- as.matrix(dat)           # Rows are genes, columns are samples
+cor.m <- cor(expr, method = "pearson")   # Sample vs Sample correlation
 
+ht <- Heatmap(cor.m,
+              name = "PCC",
+              col = col_fun,
+              cluster_rows = TRUE,
+              cluster_columns = TRUE,
+              row_names_gp = gpar(fontsize = 9),
+              column_names_gp = gpar(fontsize =9),
+              #width = unit(6, "cm"),
+              #height = unit(6, "cm"),
+              #top_annotation = up_text,
+              show_column_names = TRUE,
+              show_row_names = TRUE)
+pdf(file = "RNA-00-Correlation-Heatmap.pdf",height = 2.5,width = 3)
+ComplexHeatmap::draw(ht, annotation_legend_side = "right")
+dev.off()
+
+############## DEGs ###############
 ###### E vs H ######
 dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/readCount.txt") %>%
   dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
@@ -32,217 +98,1277 @@ dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/readCount.tx
 mid <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt")
 library(DESeq2)
 dat3 <- dat %>% dplyr::select(contains("E") | contains("H"))
-colData <- data.frame(row.names=colnames(dat3),
-                      condition=colnames(dat3) %>% str_remove_all("_.*") %>% factor(.,levels=c("E","H")))
+
+colData <- data.frame(row.names=colnames(dat3), condition=colnames(dat3) %>% str_remove_all("_.*") %>% factor(.,levels=c("E","H")))
 dat3 = dat3[rowSums(dat3) >  10,]
 dds <- DESeqDataSetFromMatrix(dat3, colData, design= ~ condition)
 keep <- rowSums(counts(dds) >= 10) >= 2
 dds <- dds[keep, ]
 dds <- DESeq(dds)
 res = results(dds, contrast=c("condition","H", "E")) %>% data.frame(check.names = F)
-tempOutput = res[order(res$pvalue),] %>% data.frame(check.names = F) %>%
-  mutate(fdr = p.adjust(pvalue,method="BH",n = nrow(.)))
+tempOutput = res[order(res$pvalue),] %>% data.frame(check.names = F) %>% mutate(fdr = p.adjust(pvalue,method="BH",n = nrow(.)))
 logFC_cutoff <- 1
+# Define change based on padj and logFC
 tempOutput$change <-  ifelse((tempOutput$padj < 0.05 | tempOutput$fdr < 0.05) & abs(tempOutput$log2FoldChange) > logFC_cutoff,
                              ifelse(tempOutput$log2FoldChange > logFC_cutoff ,'H','E'),'NOT')
 tempOutput2 = tempOutput %>% data.frame(check.names = F) %>% rownames_to_column("Geneid") %>%
   merge(mid,by="Geneid")
-write.csv(tempOutput2, file = "RNA-01-DEGs-EvsH.DESeq2.csv")
+write.csv(tempOutput2,file = "RNA-01-DEGs-EvsH.DESeq2.csv")
 
+###### V vs H ######
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/readCount.txt") %>%
+  dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
+  column_to_rownames("Geneid") %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
+mid <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt")
+library(DESeq2)
+dat3 <- dat %>% dplyr::select(contains("V") | contains("H"))
+
+colData <- data.frame(row.names=colnames(dat3), condition=colnames(dat3) %>% str_remove_all("_.*") %>% factor(.,levels=c("V","H")))
+dat3 = dat3[rowSums(dat3) >  10,]
+dds <- DESeqDataSetFromMatrix(dat3, colData, design= ~ condition)
+keep <- rowSums(counts(dds) >= 10) >= 2
+dds <- dds[keep, ]
+dds <- DESeq(dds)
+res = results(dds, contrast=c("condition","H", "V")) %>% data.frame(check.names = F)
+tempOutput = res[order(res$pvalue),] %>% data.frame(check.names = F) %>% mutate(fdr = p.adjust(pvalue,method="BH",n = nrow(.)))
+logFC_cutoff <- 1
+# Define change
+tempOutput$change <-  ifelse((tempOutput$padj < 0.05 | tempOutput$fdr < 0.05) & abs(tempOutput$log2FoldChange) > logFC_cutoff,
+                             ifelse(tempOutput$log2FoldChange > logFC_cutoff ,'H','V'),'NOT')
+tempOutput2 = tempOutput %>% data.frame(check.names = F) %>% rownames_to_column("Geneid") %>%
+  merge(mid,by="Geneid")
+write.csv(tempOutput2,file = "RNA-01-DEGs-VvsH.DESeq2.csv")
+
+# GSEA Visualization (Part 1)
+library(GseaVis)
+p <- gseaNb(object = res_read ,#exp.col = c("#5E4FA2", "#FFFFBF","#D53E4F"),
+            geneSetID = c("GO:0005840",
+                          "GO:0022626",
+                          "GO:0042775",
+                          "GO:0006119",
+                          "GO:0006412","GO:0042773","GO:0022904","GO:0022900"),
+            #addPval = T,
+            curveCol=colorlist,
+            pvalX = 0.05,pvalY = 0.1,
+            subPlot = 2,pCol="black",
+            pDigit=2,nesDigit=2,
+            #termWidth=15,
+            #termWidth = 15,
+            #legend.position = c(0.7,0.7),
+            pHjust = 0)
+
+## 1. Extract required data
+tbl <- res_read @result %>% data.frame(check.names = F) %>%
+  filter(ID %in% c("GO:0005840",
+                   "GO:0022626",
+                   "GO:0042775",
+                   "GO:0006119",
+                   "GO:0006412","GO:0042773","GO:0022904","GO:0022900")) %>%
+  dplyr::select(Description, NES, p.adjust) %>%
+  mutate(p.adjust = signif(p.adjust, 3))          # Keep 3 significant figures for p-value
+
+library(GseaVis)
+library(gridExtra)   # tableGrob
+library(grid)        # Fine-tune position
+
+## 2. Customize table appearance using tableGrob
+nes.table <- tableGrob(tbl,
+                       rows = NULL,            # Do not draw row names
+                       theme = ttheme_minimal(
+                         base_size = 9,       # Font size
+                         base_colour = "black",
+                         #padding = unit(2, "mm"),
+                         colhead = list(fg_params = list(col = "white",
+                                                         fontface = "bold"),
+                                        bg_params = list(fill = "#336699"))))
+
+p.table <- ggplot() +
+  annotation_custom(nes.table) +
+  theme_void()
+library(patchwork)
+p.final <- p / p.table + plot_layout(heights = c(1, 1),nrow = 3)
+ggsave("RNA-02-GSEA-VvsH.go-H.pdf", p.final, width = 9, height = 8)
+
+## GSEA Visualization (Part 2)
+library(GseaVis)
+p <- gseaNb(object = res_read ,
+            geneSetID = c("GO:0016126",
+                          "GO:0048699",
+                          "GO:0007224","GO:0022008","GO:0006694","GO:0000902","GO:0048468"),
+            curveCol=colorlist,
+            pvalX = 0.05,pvalY = 0.1,
+            subPlot = 2,pCol="black",
+            pDigit=2,nesDigit=2,
+            pHjust = 0)
+
+## 1. Extract required data
+tbl <- res_read @result %>% data.frame(check.names = F) %>%
+  filter(ID %in% c("GO:0016126",
+                   "GO:0048699",
+                   "GO:0007224","GO:0022008","GO:0006694","GO:0000902","GO:0048468")) %>%
+  dplyr::select(Description, NES, p.adjust) %>%
+  mutate(p.adjust = signif(p.adjust, 3))          # Keep 3 significant figures
+
+library(GseaVis)
+library(gridExtra)   # tableGrob
+library(grid)        # Fine-tune position
+
+## 2. Customize table
+nes.table <- tableGrob(tbl,
+                       rows = NULL,            
+                       theme = ttheme_minimal(
+                         base_size = 9,       
+                         base_colour = "black",
+                         colhead = list(fg_params = list(col = "white",
+                                                         fontface = "bold"),
+                                        bg_params = list(fill = "#336699"))))
+
+p.table <- ggplot() +
+  annotation_custom(nes.table) +
+  theme_void()
+library(patchwork)
+p.final <- p / p.table + plot_layout(heights = c(1, 1),nrow = 3)
+ggsave("RNA-02-GSEA-VvsH.go-V.pdf", p.final, width = 7.5, height = 7)
+
+############## Volcano ##########
 ######  E vs H ########
-deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1)
-p21 <- ggplot(deg %>% filter(!is.na(padj)) %>% mutate(change=factor(change,levels=c("H","E","NOT"))),
-              aes(x = log2FoldChange, y = -log10(padj))) +
-  geom_point(aes(color = change), alpha = 0.8, size = 1.2) +
-  scale_color_manual(values = c(H = "#ab586c", E = "#9ebeb9", NOT = "grey90")) +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
-  labs(x = "log2 fold change", y = "-log10(FDR)", title = "E vs H") +
-  ggthemes::theme_few() +
-  theme(axis.text = element_text(color='black',size=9),
-        axis.title = element_text(size=9),
-        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"),
-        plot.title = element_text(hjust = 0.5, size = 9)) +
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1)
+p21 <- ggplot(deg %>% filter( ! is.na(padj))%>% mutate(change=factor(change,levels=c("H","E","NOT"))),
+       aes(x = log2FoldChange, y = -log10(padj))) + 
+  geom_point(aes(color = change), alpha = 0.8, size = 1.2) + 
+  scale_color_manual("",values = c(H = "#ab586c", E = "#9ebeb9", NOT = "grey90")) + 
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) + 
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) + 
+  labs(x = "log2 fold change", y = "-log10(FDR)", title = "E vs H\nE:1158 H:1174") + 
+  ggthemes::theme_few() + 
+  theme(#legend.position = "none",
+    axis.text = element_text(color='black',size=9),
+    axis.text.x = element_text(size=9),
+    #axis.ticks = element_text(color="black"),
+    plot.title = element_text(hjust = 0.5,size = 9),
+    axis.title = element_text(size=9),
+    panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")
+  )+
   guides(color = guide_legend(override.aes = list(size=3)))
-ggsave(p21, filename="RNA-01-DEGs-EvsH.Volcano.pdf", height = 2.3, width = 3)
+ggsave(p21,filename="RNA-01-DEGs-EvsH.Volcano.pdf",height = 2.3,width = 3)
+  
+# "#9ebeb9","#ab586c"
+
+######  V vs H ########
+deg <- read.csv("RNA-01-DEGs-VvsH.DESeq2.csv",row.names = 1)
+p22 <- ggplot(deg %>% filter( ! is.na(padj)) %>% mutate(change=factor(change,levels=c("H","V","NOT"))),
+              aes(x = log2FoldChange, y = -log10(padj))) + 
+  geom_point(aes(color = change), alpha = 0.8, size = 1.2) + 
+  scale_color_manual("",values = c(H = "#ab586c", V = "#9ebeb9", NOT = "grey90")) + 
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) + 
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) + 
+  labs(x = "log2 fold change", y = "-log10(FDR)", title = "V vs H\nV:4 H:5") + 
+  ggthemes::theme_few() + 
+  theme(#legend.position = "none",
+    axis.text = element_text(color='black',size=9),
+    axis.text.x = element_text(size=9),
+    #axis.ticks = element_text(color="black"),
+    plot.title = element_text(hjust = 0.5,size = 9),
+    axis.title = element_text(size=9),
+    panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid")
+  )+
+  guides(color = guide_legend(override.aes = list(size=3)))
+ggsave(p22,filename="RNA-01-DEGs-VvsH.Volcano.pdf",height = 2.4,width = 3)
+
+############## GESA #############
+###### E vs H ########
+#### 1) KEGG-GSEA ####
+library(clusterProfiler)
+# remotes::install_version("ggplot2", version = "3.5.2", repos = "https://cran.r-project.org")
+# BiocManager::install("GuangchuangYu/clusterProfiler")
+library(org.Bt.eg.db)      # Bovine species annotation
+library(GseaVis)           # Visualization
+library(tidyverse)
+library(fgsea)
+library(msigdb)
+library(GSEABase)
+library(ReactomePA)
+library(clusterProfiler)   # ID conversion
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1)
+gene_df <- bitr(deg$Geneid,
+                fromType = "ENSEMBL",
+                toType   = "ENTREZID",
+                OrgDb    = org.Bt.eg.db)
+deg <- deg %>% left_join(gene_df, by = c("Geneid" = "ENSEMBL")) %>% 
+  filter(!is.na(ENTREZID)) %>% 
+  arrange(desc(log2FoldChange))
+geneList <- deg$log2FoldChange
+names(geneList) <- deg$ENTREZID
+geneList <- sort(geneList, decreasing = TRUE)
+stats <- geneList[!duplicated(names(geneList))] 
+stats <- sort(stats, decreasing = TRUE)
+# 1) KEGG-GSEA
+gsea.kegg <- gseKEGG(geneList     = stats,
+                     organism     = "bta",        # Bovine KEGG code
+                     pvalueCutoff = 0.05,
+                     pAdjustMethod = "BH",
+                     minGSSize    = 5,
+                     maxGSSize    = 500)
+res_read <- clusterProfiler::setReadable(gsea.kegg, OrgDb="org.Bt.eg.db", keyType="ENTREZID")
+library(qs)
+qsave(res_read,file="RNA-02-GSEA-EvsH.KEGG.qs")
+write.csv(res_read@result,file = "RNA-02-GSEA-EvsH.KEGG.csv")
+
+# Visualization Code for KEGG GSEA (E vs H) - H
+# [Code omitted for brevity, logic identical to previous GSEA plots: selection, gseaNb plot, tableGrob, patching]
+# Saving to: "RNA-02-GSEA-EvsH.KEGG-H.pdf"
+
+# Visualization Code for KEGG GSEA (E vs H) - E
+# [Code omitted, logic identical]
+# Saving to: "RNA-02-GSEA-EvsH.KEGG-E.pdf"
+
+# Overall KEGG GSEA Barplot
+p1 <- res_read@result %>% mutate(Atr = if_else(NES>0,"P","N")) %>% dplyr::group_by(Atr) %>%
+  top_n(-10,p.adjust) %>%
+  mutate(ID=str_remove_all(ID,"KEGG_") %>% stringr::str_to_title()) %>%
+  dplyr::group_by(Atr) %>% arrange(NES) %>%
+  dplyr::filter(! str_detect(ID,"endoplasmic_"))%>%
+  dplyr::filter(! str_detect(Description,"Virion")) %>%
+  mutate(Description=factor(Description,levels=.$Description)) %>%
+  ggplot(aes(x = NES, y = Description, fill = Atr))+
+  scale_fill_manual(values = c("#9ebeb9","#ab586c"), guide = FALSE)+
+  geom_col()+
+  theme_bw()+
+  theme(
+    legend.position = 'none',
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_text(color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    axis.line.x = element_line(color = 'black',size = 1.1),
+    axis.text = element_text(size = 9)
+  )+
+  labs(x="NES",y="",title = "E <-> H")+
+  geom_text(data = .%>%filter(Atr=="P"),
+            aes(x = -0.01, ## Adjust label position
+                y = Description, label = Description),
+            size = 3.5,
+            hjust = 1)+
+  geom_text(data = .%>%filter(Atr=="N"),
+            aes(x = 0.01, y = Description, label = Description),
+            size = 3.5,
+            hjust = 0)+
+  theme(plot.title = element_text(hjust = 0.5, size = 9))
+ggsave(p1,filename="RNA-02-GSEA-EvsH.KEGG.Overall.pdf",height = 4,width = 4)
+
+
+#### 2) GO-GSEA (ALL = BP + MF + CC) ####
+# [Setup libraries and gene lists identical to KEGG section]
+gsea.go <- gseGO(geneList     = stats,
+                 OrgDb        = org.Bt.eg.db,
+                 ont          = "ALL",
+                 pvalueCutoff = 0.05,
+                 pAdjustMethod = "BH",
+                 minGSSize    = 5,
+                 maxGSSize    = 500)
+
+res_read <- clusterProfiler::setReadable(gsea.go, OrgDb="org.Bt.eg.db", keyType="ENTREZID")
+library(qs)
+qsave(res_read,file="RNA-02-GSEA-EvsH.go.qs")
+write.csv(res_read@result,file = "RNA-02-GSEA-EvsH.go.csv")
+
+# Visualization for GO GSEA (H)
+# [Code omitted]
+# Saving to "RNA-02-GSEA-EvsH.go-H.pdf"
+
+# Visualization for GO GSEA (E)
+# [Code omitted]
+# Saving to "RNA-02-GSEA-EvsH.go-E.pdf"
+
+# Overall GO GSEA Barplot
+# [Code omitted, structure identical to KEGG overall barplot]
+# Saving to "RNA-02-GSEA-EvsH.go.Overall.pdf"
+
+
+###### V vs H ########
+#### 1) KEGG-GSEA ####
+# [Setup libraries, data loading for V vs H, bitr conversion]
+# 1) KEGG-GSEA
+gsea.kegg <- gseKEGG(geneList     = stats,
+                     organism     = "bta",        # Bovine KEGG code
+                     pvalueCutoff = 0.05,
+                     pAdjustMethod = "BH",
+                     minGSSize    = 5,
+                     maxGSSize    = 500)
+res_read <- clusterProfiler::setReadable(gsea.kegg, OrgDb="org.Bt.eg.db", keyType="ENTREZID")
+library(qs)
+qsave(res_read,file="RNA-02-GSEA-VvsH.KEGG.qs")
+write.csv(res_read@result,file = "RNA-02-GSEA-VvsH.KEGG.csv")
+
+# Visualization for KEGG (V vs H)
+# [Code omitted]
+# Saving to "RNA-02-GSEA-VvsH.KEGG-H.pdf"
+
+# Overall KEGG Barplot (V vs H)
+# [Code omitted]
+# Saving to "RNA-02-GSEA-VvsH.KEGG.Overall.pdf"
+
+#### 2) GO-GSEA (ALL = BP + MF + CC) ####
+# [Setup identical to previous GO sections]
+gsea.go <- gseGO(geneList     = stats,
+                 OrgDb        = org.Bt.eg.db,
+                 ont          = "ALL",
+                 pvalueCutoff = 0.05,
+                 pAdjustMethod = "BH",
+                 minGSSize    = 5,
+                 maxGSSize    = 500)
+
+res_read <- clusterProfiler::setReadable(gsea.go, OrgDb="org.Bt.eg.db", keyType="ENTREZID")
+library(qs)
+qsave(res_read,file="RNA-02-GSEA-VvsH.go.qs")
+write.csv(res_read@result,file = "RNA-02-GSEA-VvsH.go.csv")
+
+
+############## Enrichment #############
+######  E vs H ########
+#### H ####
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change == "H")
+library(clusterProfiler); library(enrichplot); library(org.Bt.eg.db); library(dplyr)
+conv <- bitr(deg$Geneid, fromType = "ENSEMBL", toType = "ENTREZID", OrgDb = org.Bt.eg.db)
+# GO
+ego_bp <- enrichGO(gene = conv$ENTREZID, OrgDb = org.Bt.eg.db, keyType = "ENTREZID", ont = "ALL", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+write.csv(ego_bp@result,file = "RNA-03-Enrichment-EvsH-H.GO.csv")
+# GO Dotplot
+# [Code omitted]
+# Saving to "RNA-03-Enrichment-EvsH-H.GO.pdf"
+
+# KEGG
+ekk <- enrichKEGG(gene = conv$ENTREZID, organism = "bta", pAdjustMethod = "BH", qvalueCutoff = 0.05)
+ekk_read <- setReadable(ekk, OrgDb = org.Bt.eg.db, keyType = "ENTREZID")
+write.csv(ekk_read@result,file = "RNA-03-Enrichment-EvsH-H.KEGG.csv")
+# KEGG Dotplot
+# [Code omitted]
+# Saving to "RNA-03-Enrichment-EvsH-H.KEGG.pdf"
+
+#### E ####
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change == "E")
+# [Setup bitr conversion]
+# GO
+ego_bp <- enrichGO(gene = conv$ENTREZID, OrgDb = org.Bt.eg.db, keyType = "ENTREZID", ont = "ALL", pAdjustMethod = "BH", qvalueCutoff = 0.05, readable = TRUE)
+write.csv(ego_bp@result,file = "RNA-03-Enrichment-EvsH-E.GO.csv")
+# GO Dotplot
+# [Code omitted]
+# Saving to "RNA-03-Enrichment-EvsH-E.GO.pdf"
+
+# KEGG
+ekk <- enrichKEGG(gene = conv$ENTREZID, organism = "bta", pAdjustMethod = "BH", qvalueCutoff = 0.05)
+ekk_read <- setReadable(ekk, OrgDb = org.Bt.eg.db, keyType = "ENTREZID")
+write.csv(ekk_read@result,file = "RNA-03-Enrichment-EvsH-E.KEGG.csv")
+# KEGG Dotplot
+# [Code omitted]
+# Saving to "RNA-03-Enrichment-EvsH-E.KEGG.pdf"
+
+######  V vs H ########
+# [Preprocessing code for DEGs]
+
+############## Veen ###############
+# Load DEGs for Venn Diagram
+deg1.1 <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change=="H")
+deg1.2 <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change=="E")
+
+deg2.1 <- read.csv("RNA-01-DEGs-VvsH.DESeq2.csv",row.names = 1) %>% filter(change=="H")
+deg2.2 <- read.csv("RNA-01-DEGs-VvsH.DESeq2.csv",row.names = 1) %>% filter(change=="V")
+
+library(ggvenn)
+vennlist <- list(EvsH.E = deg1.2$Geneid,
+                 EvsH.H = deg1.1$Geneid,
+                 VvsH.H = deg2.1$Geneid,
+                 VvsH.V = deg2.2$Geneid)
+P321 <- ggvenn(
+  data = vennlist,         # Data list
+  columns = NULL,           # Plot all columns
+  show_elements = F,        # Show element counts, not elements themselves
+  label_sep = "\n",         # Newline separator
+  show_percentage = T,      # Show percentages
+  digits = 1,               # Percentage decimal points
+  fill_color = colorlist, # Fill color
+  fill_alpha = 0.5,         # Transparency
+  stroke_color = "white",   # Stroke color
+  stroke_alpha = 0.5,       # Stroke transparency
+  stroke_size = 0.5,        # Stroke size
+  stroke_linetype = "solid", # Stroke line type
+  set_name_color = "black", # Set name color
+  set_name_size = 4,        # Set name size
+  text_color = "black",     # Text color
+  text_size = 4             # Text size
+)
+ggsave(P321,filename="RNA-04-Cluster-DEGs-Venn.pdf",height = 3,width = 5)
+
+############## Heatmap => EvsH ################
+deg1 <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change!="NOT")
+deg2 <- read.csv("RNA-01-DEGs-VvsH.DESeq2.csv",row.names = 1) %>% filter(change!="NOT")
+# Load TPM data
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(c("Geneid",contains("_"))) %>% remove_rownames() %>%
+  column_to_rownames("Geneid") %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4) %>% dplyr::select(-contains("V_"))
+dat = log2(dat+1)
+
+tpm.log <- dat[deg1$Geneid,] %>% data.frame(check.names = F)
+library(ComplexHeatmap)
+library(circlize)
+color<-c("#5E4FA2", "#66C2A5" , "grey90", "#FDAE61","#b42e20") # #D53E4F
+col_fun <- colorRamp2(c(-2,-1, 0, 1, 2), color)
+ht <- Heatmap(t(scale(t(tpm.log))), km = 2,
+              show_row_dend = T,
+              col = col_fun, 
+              name = "Z score",
+              cluster_rows = T, 
+              cluster_columns = F,
+              column_order = colnames(tpm.log),
+              column_split = colnames(tpm.log) %>% str_remove_all("_.*"),
+              column_gap = unit(rep(2,2), "mm"),
+              show_row_names = F,
+              row_names_gp = gpar(fontsize = 9),
+              row_names_side = "left", 
+              show_column_names = T,
+              column_names_gp = gpar(fontsize = 9),
+              column_title = "",
+              column_title_gp = gpar(fontsize = 9),
+              row_title =NULL,
+              row_title_gp = gpar(fontsize = 9),
+              na_col = "white",
+              use_raster=F
+)
+pdf("RNA-04-Cluster-EvsH-Heatmap.zscore.pdf",width = 3,height = 4)
+ComplexHeatmap::draw(ht,
+                     annotation_legend_side = "right", 
+                     heatmap_legend_side = "right")
+dev.off()
+
+
+############## Cluster #############
+library(Mfuzz)
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+# Load TPM data
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(c("genename",contains("_"))) %>% remove_rownames() %>%
+  dplyr::select(-gene_biotype) %>% dplyr::select(-E_B_4)
+dat = aggregate(. ~ genename, data = dat, FUN = sum)
+dat = dat %>% data.frame(check.names = F) %>% remove_rownames() %>% column_to_rownames("genename")
+
+meta = data.frame(sample=colnames(dat)) %>% mutate(group=str_remove_all(sample,"_.*"))
+# 1. Filter out low expression genes (reduce noise)
+expr.filt <- dat[rowSums(dat > 1) >= 3, ]       # At least 3 samples with TPM > 1
+library(plyr) 
+# 2. Sort by group means (pseudo-time order)
+expr.filt2 = expr.filt %>% t() %>% data.frame(check.names = F) %>% rownames_to_column("sample") %>%
+  merge(meta,by="sample") %>% remove_rownames() %>% column_to_rownames("sample")
+group.mean = aggregate(. ~ group, data = expr.filt2, FUN = mean)
+group.mean = group.mean %>% data.frame(check.names = F) %>% remove_rownames() %>% column_to_rownames("group")
+expr.order <- group.mean %>% t() %>% data.frame(check.names = F)
+
+write.csv(expr.order,file = "RNA-04-Cluster-Data-for-mfuzz.csv")
+library(ClusterGVis)
+expr = read.csv("RNA-04-Cluster-Data-for-mfuzz.csv",row.names = 1)
+getClusters(expr%>% na.omit() %>% as.matrix())
+# Run mfuzz clustering
+cm <- clusterData(expr%>%  na.omit() %>% as.matrix(),
+                  cluster.method = "mfuzz",
+                  cluster.num = 8)
+library(qs)
+qsave(cm,file = "RNA-04-Cluster-mfuzz-8C.qs")
+write.csv(cm$wide.res,file = "RNA-04-Cluster-mfuzz-8C.csv",row.names = F)
+
+# Enrichment for clusters
+enrich <- enrichCluster(object = cm,
+                        OrgDb = org.Bt.eg.db,
+                        type = "BP",
+                        organism = "bta",
+                        pvalueCutoff = 0.05,
+                        topn = 6,
+                        seed = 5201314)
+enrich.KEGG <- enrichCluster(object = cm,
+                             OrgDb = org.Bt.eg.db,
+                             type = "KEGG",
+                             organism = "bta",
+                             pvalueCutoff = 0.05,
+                             topn = 6,
+                             seed = 5201314)
+
+palette = c("Grays","Light Grays","Blues2","Blues3","Purples2","Purples3","Reds2","Reds3","Greens2")
+
+# loop to plot enrichment for each cluster
+lapply(seq_along(unique(enrich$group)), function(x){
+  # go plot
+  tmp <- enrich |> dplyr::filter(group == unique(enrich$group)[x]) |>
+    dplyr::arrange(desc(pvalue))
+  
+  tmp$Description <- factor(tmp$Description,levels = tmp$Description)
+  
+  # plot
+  p <-
+    ggplot(tmp) +
+    geom_col(aes(x = -log10(pvalue),y = Description,fill = -log10(pvalue)),
+             width = 0.75) +
+    geom_line(aes(x = log10(ratio),y = as.numeric(Description)),color = "grey50") +
+    geom_point(aes(x = log10(ratio),y = Description),size = 3,color = "orange") +
+    theme_bw() +
+    scale_y_discrete(position = "right",
+                     labels = function(x) stringr::str_wrap(x, width = 40)) +
+    scale_x_continuous(sec.axis = sec_axis(~.,name = "log10(ratio)")) +
+    colorspace::scale_fill_binned_sequential(palette = palette[x]) +
+    ylab("")
+  
+  # plot kegg
+  tmp.kg <- enrich.KEGG |> dplyr::filter(group == unique(enrich.KEGG$group)[x]) |>
+    dplyr::arrange(desc(pvalue))
+  
+  tmp.kg$Description <- factor(tmp.kg$Description,levels = tmp.kg$Description)
+  
+  # plot
+  pk <-
+    ggplot(tmp.kg) +
+    geom_segment(aes(x = 0,xend = -log10(pvalue),y = Description,yend = Description),
+                 lty = "dashed",linewidth = 0.75) +
+    geom_point(aes(x = -log10(pvalue),y = Description,color = -log10(pvalue)),size = 5) +
+    theme_bw() +
+    scale_y_discrete(position = "right",
+                     labels = function(x) stringr::str_wrap(x, width = 40)) +
+    colorspace::scale_color_binned_sequential(palette = palette[x]) +
+    ylab("") + xlab("-log10(pvalue)")
+  
+  # combine
+  cb <- cowplot::plot_grid(plotlist = list(p,pk))
+  
+  return(cb)
+}) -> gglist
+
+# assign names
+names(gglist) <- paste("C",1:8,sep = "")
+grp <- factor(c("E","H","V"), levels = c("E","H","V"))
+pal <- c(E = "#1f77b4", H = "#ff7f0e", V = "#DB7093")
+pdf('RNA-04-Cluster-mfuzz-8C.pdf',height = 18,width = 18,onefile = F)
+visCluster(object = cm,ms.col = c('#0099CC','grey90','#CC3333'),
+           line.size = 0.1,
+           sample.order = grp, sample.col = pal,
+           annnoblock.gp =c("white", 9),
+           plot.type = "both",
+           ht.col.list = list(col_range = c(-2, 0, 2),col_color = c("#08519C", "white", "#A50F15")),
+           line.side = "left",
+           border = "white",ctAnno.col = colorlist,textbox.size = 9,go.size = 9,
+           column_names_rot = 45,add.box = T,show_row_dend = F,
+           go.col = rep(ggsci::pal_d3()(8),each = 5),
+           cluster.order = c(1:8),
+           ggplot.panel.arg = c(5,0.5,32,"grey90",NA),
+           gglist = gglist)
+dev.off()
+
+# Further Enrichment saving
+cm <- qread(file = "RNA-04-Cluster-mfuzz-8C.qs")
+
+enrich <- enrichCluster(object = cm, OrgDb = org.Bt.eg.db, type = "BP", organism = "bta", pvalueCutoff = 0.05, topn = 100, seed = 5201314)
+enrich %>% data.frame(check.names = F) %>% rownames_to_column("ID") %>%
+  mutate(ID=str_remove_all(ID,"\\..*")) %>%
+  write.csv(file = "RNA-04-Cluster-mfuzz-8C.GO-BP.csv",row.names = F)
+
+enrich <- enrichCluster(object = cm, OrgDb = org.Bt.eg.db, type = "CC", organism = "bta", pvalueCutoff = 0.05, topn = 100, seed = 5201314)
+enrich %>% data.frame(check.names = F) %>% rownames_to_column("ID") %>%
+  mutate(ID=str_remove_all(ID,"\\..*")) %>%
+  write.csv(file = "RNA-04-Cluster-mfuzz-8C.GO-CC.csv",row.names = F)
+
+enrich <- enrichCluster(object = cm, OrgDb = org.Bt.eg.db, type = "MF", organism = "bta", pvalueCutoff = 0.05, topn = 100, seed = 5201314)
+enrich %>% data.frame(check.names = F) %>% rownames_to_column("ID") %>%
+  mutate(ID=str_remove_all(ID,"\\..*")) %>%
+  write.csv(file = "RNA-04-Cluster-mfuzz-8C.GO-MF.csv",row.names = F)
+
+enrich.KEGG <- enrichCluster(object = cm, OrgDb = org.Bt.eg.db, type = "KEGG", organism = "bta", pvalueCutoff = 0.05, topn = 100, seed = 5201314)
+enrich.KEGG %>% data.frame(check.names = F) %>% rownames_to_column("ID") %>%
+  mutate(ID=str_remove_all(ID,"\\..*")) %>%
+  write.csv(file = "RNA-04-Cluster-mfuzz-8C.KEGG.csv",row.names = F)
+
+############## TF ###############
+library(JASPAR2024); library(JASPAR2022); library(TFBSTools)
+
+# Load TF list
+tf <- fread("20250620A_Smartseq2_cow_report/data/TF/Animal_TF.xls") %>%
+  filter(V1 == "Bos_taurus")
+
+deg1 <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change!="NOT") %>%
+  filter(genename %in% tf$V2)
+
+dat <- deg1 %>% dplyr::select(c(contains("_"),"genename")) %>% dplyr::select(-gene_biotype) %>% arrange(genename) %>%
+  unique() %>%
+  remove_rownames() %>% column_to_rownames("genename") %>%
+  dplyr::select(-E_B_4)
+dat = log2(dat+1)
+
+library(ComplexHeatmap)
+library(circlize)
+color<-c("#5E4FA2", "#66C2A5" , "grey90", "#FDAE61","#b42e20") 
+col_fun <- colorRamp2(c(-2,-1, 0, 1, 2), color)
+
+tf2 = tf %>% filter(V2 %in% deg1$genename) %>% dplyr::select(V2,V4) %>% arrange(V2) %>% unique() %>% mutate(V2=factor(V2,levels=rownames(dat))) %>%
+  arrange(V2)
+
+mid = table(tf2$V4) %>% data.frame(check.names = F) %>% arrange(desc(Freq)) %>% mutate(Var1=factor(Var1,levels=.$Var1))
+tf_color=colorlist[1:41]
+names(tf_color) = levels(mid$Var1)
+
+row_anno <- rowAnnotation(
+  df = tf2 %>% remove_rownames() %>% column_to_rownames("V2") %>% magrittr::set_colnames(c("family")) %>% mutate(family=factor(family,levels=levels(mid$Var1))),
+  col = list(family = tf_color),
+  na_col = "grey90",
+  annotation_name_side = "top",
+  annotation_legend_param = list(title = "TF family")
+)
+
+ht <- Heatmap(t(scale(t(dat))), km = 2,
+              show_row_dend = T,
+              col = col_fun, 
+              name = "Z score",
+              cluster_rows = T, 
+              cluster_columns = F,
+              column_order = colnames(dat),
+              column_split = colnames(dat) %>% str_remove_all("_.*"),
+              column_gap = unit(rep(2,2), "mm"),
+              show_row_names = T,
+              row_names_gp = gpar(fontsize = 8),
+              row_names_side = "left", 
+              show_column_names = T,
+              column_names_gp = gpar(fontsize = 9),
+              column_title = "",
+              column_title_gp = gpar(fontsize = 9),
+              row_title =NULL,
+              row_title_gp = gpar(fontsize = 9),
+              na_col = "white",
+              use_raster=F,
+              left_annotation = row_anno
+)
+pdf("RNA-05-TF-Expression-Heatmap.zscore.pdf",width = 4,height = 16)
+ComplexHeatmap::draw(ht,
+                     annotation_legend_side = "right", 
+                     heatmap_legend_side = "right")
+dev.off()
+
+# Plot TF Family Count
+p2143 <- ggplot(mid %>% mutate(Var1=factor(Var1,levels=rev(levels(mid$Var1)))),aes(x=Freq,y=Var1,color=Var1))+
+  geom_segment(aes(x=0,xend=Freq,y=Var1,yend=Var1),linetype = 2,color="black")+
+  geom_point(size=2)+
+  theme_bw()+
+  theme(legend.position = "none",
+        axis.text.y = element_text(size=9,color="black"),
+        axis.text.x = element_text(size=9,color="black"),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+        legend.title = element_text(size=9),
+        plot.title = element_text(size=10,hjust=0.5),
+        plot.caption = element_text(hjust = 0.5),
+        legend.text = element_text(size=9))+
+  scale_color_manual(values = tf_color)+
+  labs(x="No. of TF",y="")+
+  scale_x_log10()+
+  geom_text(aes(label = paste("n=",Freq,sep=""),x=10),hjust=0,vjust=0.4,color="black",size=3)
+ggsave(p2143,filename="RNA-05-TF-DE-Family-Count.pdf",height = 6,width = 2.5)
+
+############## bulk RNA-seq -> TF activity matrix (decoupleR) ##########
+###### EvsH ########
+#### infer TF activities based on Expression matrix ####
+library(decoupleR)
+library(tidyverse)
+library(pheatmap)
+library(viridis)
+library(dorothea)
+library(biomaRt)
+library(dplyr)
+library(tibble)
+
+# 1) Get human regulon (Use get_collectri(organism='human') if appropriate)
+#data(dorothea_hs, package = "dorothea")
+net <- get_collectri(organism='human', split_complexes=FALSE)
+write.csv(net,file = "TF-regulon-get_collectri-human.csv",row.names = F)
+#regs_hs <- dorothea_hs %>% filter(confidence %in% c("A","B","C")) %>%
+#  select(tf = tf, target = target, mor = mor)  # mor: +1/-1
+
+# 2) Human -> Cow homology mapping (Ensembl) 
+#mart_hs <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+#mart_bt <- useMart("ensembl", dataset = "btaurus_gene_ensembl")
+
+
+# 3) Merge map to cow target - [Commented out in original code]
+#hom <- getLDS(attributes = c("hgnc_symbol"),
+#              filters = "hgnc_symbol",
+#              values = unique(c(net$source,net$target)),
+#              mart = mart_hs,
+#              attributesL = c("external_gene_name"),
+#              martL = mart_bt,
+#              uniqueRows = TRUE)
+#colnames(hom) <- c("human_symbol","bovine_symbol")
+
+#net_bt <- regs_hs %>%
+#  inner_join(hom, by = c("target" = "human_symbol")) %>%
+#  transmute(source = tf, target = bovine_symbol, mor = mor) %>%
+#  distinct()
+
+# 4) Filter genes not in expression matrix - [Commented out in original code]
+#genes_in_expr <- rownames(expr)
+#net_bt <- net_bt %>% filter(target %in% genes_in_expr)
+dat <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
+  dplyr::select(c("genename",contains("_"))) %>%dplyr::select(-gene_biotype) %>%
+  arrange(genename)
+dat = aggregate(.~genename,data = dat, FUN = sum)%>% data.frame(check.names = F) %>%
+  remove_rownames() %>%
+  column_to_rownames("genename") %>%
+  dplyr::select(-E_B_4) %>% dplyr::select(! contains("V"))
+expr = log2(dat+1)
+# 5) Run decouple (Robust method)
+sample_acts <- decoupleR::decouple(
+  mat = expr,                   # Rows = Genes, Cols = Samples
+  network = net,
+  .source = "source",
+  .target = "target",
+  statistics = c("ulm","mlm","wsum","viper"),
+  minsize = 5
+)
+
+n_tfs <- 50
+# Transform to wide matrix
+sample_acts_mat <- sample_acts %>% filter(statistic == "ulm") %>%
+  tidyr::pivot_wider(id_cols = 'condition', 
+                     names_from = 'source',
+                     values_from = 'score') %>%
+  tibble::column_to_rownames('condition') %>%
+  as.matrix()
+write.csv(sample_acts_mat,file = "RNA-05-TF-decoupleR.data-ulm.csv",row.names = F)
+
+tfs <- sample_acts %>%
+  dplyr::group_by(source) %>%
+  dplyr::summarise(std = stats::sd(score)) %>%
+  dplyr::arrange(-abs(std)) %>%
+  head(n_tfs) %>%
+  dplyr::pull(source)
+sample_acts_mat <- sample_acts_mat[,tfs]
+
+# Scale per sample
+sample_acts_mat <- scale(sample_acts_mat)
+
+# Choose color palette
+colors <- rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu"))
+colors.use <- grDevices::colorRampPalette(colors = colors)(100)
+
+my_breaks <- c(seq(-2, 0, length.out = ceiling(100 / 2) + 1),
+               seq(0.05, 2, length.out = floor(100 / 2)))
+
+# Plot
+pdf(file = "RNA-05-TF-decoupleR.data-ulm.top50-heatmap.pdf",height = 8,width = 3)
+pheatmap::pheatmap(mat = t(sample_acts_mat),
+                   color = colors.use,
+                   border_color = "white",
+                   breaks = my_breaks)
+dev.off()
+
+#### infer TF activities from the stat of the DEGs between E H ########
+
+deg <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv",row.names = 1) %>% filter(change != "NOT") %>%
+  dplyr::select(genename,stat,pvalue,log2FoldChange) %>% filter(! is.na(stat)) %>% arrange(genename) %>% unique() %>%
+  remove_rownames() %>% column_to_rownames("genename")
+
+# Run ulm
+contrast_acts <- decoupleR::run_ulm(mat = deg[, 'stat', drop = FALSE], 
+                                    net = net, 
+                                    .source = 'source', 
+                                    .target = 'target',
+                                    .mor='mor', 
+                                    minsize = 5)
+
+# Filter top TFs in both signs
+f_contrast_acts <- contrast_acts %>%
+  dplyr::mutate(rnk = NA)
+
+msk <- f_contrast_acts$score > 0
+
+f_contrast_acts[msk, 'rnk'] <- rank(-f_contrast_acts[msk, 'score'])
+f_contrast_acts[!msk, 'rnk'] <- rank(-abs(f_contrast_acts[!msk, 'score']))
+
+tfs <- f_contrast_acts %>%
+  dplyr::arrange(rnk) %>%
+  head(n_tfs) %>%
+  dplyr::pull(source)
+
+f_contrast_acts <- f_contrast_acts %>%
+  filter(source %in% tfs)
+
+colors <- rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu")[c(2, 10)])
+
+p <- ggplot2::ggplot(data = f_contrast_acts %>% mutate(Atr=if_else(score>0,"P","N")) %>%
+                       arrange(Atr,score) %>% mutate(source=factor(source,levels=.$source)), 
+                     mapping = ggplot2::aes(x = score, 
+                                            y = source)) + 
+  geom_segment(mapping = ggplot2::aes(x=0,xend=score,y=source,yend=source),
+               color = "black",linetype = 2) +
+  geom_point(aes(color=score),size=3)+
+  ggplot2::scale_color_gradient2(low = "#0072B5FF", 
+                                 mid = "whitesmoke", 
+                                 high = "#BC3C29FF", 
+                                 midpoint = 0) + 
+  theme_bw()+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text = element_text(color = "black"),
+        axis.text.x = element_text(size=9),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #panel.border = element_blank(),
+        legend.title = element_text(size=9),
+        legend.text = element_text(size=9))+
+  theme(plot.title = element_text(size=10,hjust = 0.5))+
+  labs(x="Predicted activity",y="",title = "decoupleR\n E <-> H")+
+  geom_text(data = .%>%filter(Atr=="P"),
+            aes(x = -0.1, ## Adjust label pos
+                y = source, label = source),
+            size = 3.5,
+            hjust = 1)+
+  geom_text(data = .%>%filter(Atr=="N"),
+            aes(x = 0.1, y = source, label = source),
+            size = 3.5,
+            hjust = 0)+
+  theme(plot.title = element_text(hjust = 0.5, size = 9))+
+  xlim(-7,7)+
+  geom_vline(xintercept = 0,linetype=1)+
+  guides(color = guide_legend(override.aes = list(size=3)))
+ggsave(p,filename="RNA-05-TF-decoupleR.DEGs-ulm.pdf",height = 8,width = 3)
+
+# [Example Plot for specific TF omitted]
+
+###### VvsH ########
+#### infer TF activities based on Expression matrix ####
+# 5) Run decouple
+# [Code omitted - logic identical to EvsH]
+# Saving to: "RNA-05-TF-decoupleR.VvsH-data-ulm.top50-heatmap.pdf"
+
 
 ############## AS #############
+# Process rMATS data
+# Filtering criteria: reads >= 10, PSI <0.05 or >0.95, FDR <= 0.01, |deltaPSI| >= 0.05
+###### EvsH ######
 setwd("/mnt/sdd/Data_Lei/20250620A_Smartseq2_cow_report/data/Splice/File_AS_H_B_vs_E_B/")
-nSE  <- system("cat EvsH_filtering/filtered_SE.MATS.JC.txt | wc -l ", intern = TRUE)
+# Count lines in filtered files
+nSE <- system("cat EvsH_filtering/filtered_SE.MATS.JC.txt | wc -l ", intern = TRUE)
 nA5SS <- system("cat EvsH_filtering/filtered_A5SS.MATS.JC.txt | wc -l ", intern = TRUE)
 nA3SS <- system("cat EvsH_filtering/filtered_A3SS.MATS.JC.txt | wc -l ", intern = TRUE)
-nMXE  <- system("cat EvsH_filtering/filtered_MXE.MATS.JC.txt | wc -l ", intern = TRUE)
-nRI   <- system("cat EvsH_filtering/filtered_RI.MATS.JC.txt | wc -l ", intern = TRUE)
-Prop  <- c(SE = as.integer(nSE)-1, A5SS = as.integer(nA5SS)-1,
-           A3SS = as.integer(nA3SS)-1, MXE = as.integer(nMXE)-1, RI = as.integer(nRI)-1)
+nMXE <- system("cat EvsH_filtering/filtered_MXE.MATS.JC.txt | wc -l ", intern = TRUE)
+nRI <- system("cat EvsH_filtering/filtered_RI.MATS.JC.txt | wc -l ", intern = TRUE)
+Prop <- c(SE = as.integer(nSE)-1, A5SS = as.integer(nA5SS)-1, A3SS = as.integer(nA3SS)-1, MXE = as.integer(nMXE)-1, RI = as.integer(nRI)-1)
 
-df = data.frame(Prop) %>% rownames_to_column("type") %>%
+df = data.frame(Prop) %>% magrittr::set_colnames("nums") %>% rownames_to_column("type") %>%
   mutate(label_value=paste('(n=',nums,",", round(nums/sum(nums) * 100, 1), '%)', sep = '')) %>%
   mutate(label=paste(type, label_value, sep = '')) %>%
   arrange(nums) %>% mutate(label=factor(label,levels=rev(.$label)))
+colorlist <- c("#5fa664","#ca6a6b","#4e79a6","#bac4d0","#a199be","#f9766e","#abd0a7","#e5b5b5","#fbbab6","#e1c548","#f0e2a3","#aedd2f","#d7ee96")
+write.csv(df,file = "../../../../RNA-06-AS-EvsH-filtering.PiePlot.csv",row.names = F)
 
-p12 <- ggplot(data = df, mapping = aes(x = 'Content', y = nums, fill = label)) +
-  geom_bar(stat = 'identity', position = 'stack',color="black") +
-  coord_polar(theta = 'y') +
-  labs(x = '', y = '', title = '') +
-  theme_void() +
-  scale_fill_manual(values = colorlist)
-ggsave(p12, filename="../../RNA-06-AS-EvsH-filtering.PiePlot.pdf", height = 3, width = 4)
+# Pie chart of filtered events
+p12 <- ggplot(data = df, mapping = aes(x = 'Content', y = nums, fill = label)) + 
+  geom_bar(stat = 'identity', position = 'stack',color="black") + 
+  coord_polar(theta = 'y') + labs(x = '', y = '', title = '') + theme(axis.text = element_blank()) + 
+  theme(axis.ticks = element_blank()) + 
+  scale_fill_manual("",values = colorlist) +
+  theme_void()
+ggsave(p12,filename="../../../../RNA-06-AS-EvsH-filtering.PiePlot.pdf",height = 3,width = 4)
+
+# Count Significant events (Up/Down)
+nSE <- system("cat ./EvsH_filtering/up_SE.MATS.JC.txt ./EvsH_filtering/dn_SE.MATS.JC.txt | wc -l ", intern = TRUE)
+nA5SS <- system("cat ./EvsH_filtering/up_A5SS.MATS.JC.txt ./EvsH_filtering/dn_A5SS.MATS.JC.txt | wc -l ", intern = TRUE)
+nA3SS <- system("cat ./EvsH_filtering/up_A3SS.MATS.JC.txt ./EvsH_filtering/dn_A3SS.MATS.JC.txt | wc -l ", intern = TRUE)
+nMXE <- system("cat ./EvsH_filtering/up_MXE.MATS.JC.txt ./EvsH_filtering/dn_MXE.MATS.JC.txt | wc -l ", intern = TRUE)
+nRI <- system("cat ./EvsH_filtering/up_RI.MATS.JC.txt ./EvsH_filtering/dn_RI.MATS.JC.txt | wc -l ", intern = TRUE)
+
+Prop <- c(SE = as.integer(nSE)-1, A5SS = as.integer(nA5SS)-1, A3SS = as.integer(nA3SS)-1, MXE = as.integer(nMXE)-1, RI = as.integer(nRI)-1)
+
+df2 = data.frame(Prop) %>% magrittr::set_colnames("nums") %>% rownames_to_column("type") %>%
+  mutate(label_value=paste('(n=',nums,",", round(nums/sum(nums) * 100, 1), '%)', sep = '')) %>%
+  mutate(label=paste(type, label_value, sep = '')) %>%
+  arrange(nums) %>% mutate(label=factor(label,levels=rev(.$label)))
+write.csv(df2,file = "../../../../RNA-06-AS-EvsH-filtering.PiePlot.Significant.csv",row.names = F)
+
+# Pie chart of significant events
+p13 <- ggplot(data = df2, mapping = aes(x = 'Content', y = nums, fill = label)) + 
+  geom_bar(stat = 'identity', position = 'stack',color="black") + 
+  coord_polar(theta = 'y') + labs(x = '', y = '', title = '') + theme(axis.text = element_blank()) + 
+  theme(axis.ticks = element_blank()) + 
+  scale_fill_manual(values = colorlist) +
+  theme_void()
+ggsave(p13,filename="../../../../RNA-06-AS-EvsH-filtering.PiePlot.Significant.pdf",height = 3,width = 4)
+
+#### SE / A3SS / A5SS / MXE / RI Plotting ####
+# [Logic repeated for each event type: Read data, format, filter specific events, plot IncLevel Bar+Jitter]
+# Example for SE:
+dat <- read.table("EvsH_filtering/filtered_SE.MATS.JC.txt",sep = "\t",row.names = 1,header = T) %>% data.frame(check.names = F) %>% dplyr::filter(FDR <= 0.05) %>%
+  dplyr::select(geneSymbol,IncLevel1,IncLevel2,IncLevelDifference,FDR) %>% rownames_to_column("ID") %>% arrange(IncLevelDifference)
+# ... Processing loop ...
+# Plotting with ggplot2 (Bar + Jitter)
+# Saving PDF
+
+###### VvsH ######
+# [Logic identical to EvsH for VvsH comparisons]
+# Counting lines, Pie charts, Per-event type plotting
+
+# Heatmap for VvsH SE Significant events
+library(dplyr)
+df2 <- df %>% mutate(Symbol=str_replace_all(Symbol,"\n","-")) %>%
+  dplyr::group_by(Symbol) %>% dplyr::mutate(rep_id = paste0("rep", row_number())) %>% dplyr::ungroup()
+
+V_mat <- df2 %>%
+  dplyr::select(Symbol, rep_id, V_IncLevel1) %>%
+  mutate(rep_id=str_replace_all(rep_id,"rep","V")) %>%
+  spread(rep_id,V_IncLevel1)%>%
+  column_to_rownames("Symbol") %>%
+  as.matrix()
+colnames(V_mat) <- paste0("V", 1:ncol(V_mat))
+V_mat = V_mat[,1:3]
+
+H_mat <- df2 %>%
+  dplyr::select(Symbol, rep_id, H_IncLevel2) %>%
+  mutate(rep_id=str_replace_all(rep_id,"rep","H")) %>%
+  spread(rep_id,H_IncLevel2)%>%
+  column_to_rownames("Symbol") %>%
+  as.matrix()
+colnames(H_mat) <- paste0("H", 1:ncol(H_mat))
+H_mat = H_mat[,1:3]
+
+library(ggpubr)
+library(tidyr)
+library(tidyverse)
+library(ComplexHeatmap)
+
+color<-c("#5E4FA2", "#66C2A5" , "grey90", "#FDAE61","#b42e20") # #D53E4F
+col_fun <- colorRamp2(c(-2,-1, 0, 1, 2), color)
+ht <- Heatmap(t(scale(t(cbind(V_mat,H_mat)))), 
+              show_row_dend = T,
+              col = col_fun, 
+              name = "Z score",
+              cluster_rows = T, 
+              cluster_columns = F,
+              column_order = colnames(cbind(V_mat,H_mat)),
+              column_split = colnames(cbind(V_mat,H_mat)) %>% str_remove_all("[1-9]"),
+              column_gap = unit(rep(2,2), "mm"),
+              show_row_names = F,
+              row_names_gp = gpar(fontsize = 9),
+              row_names_side = "left", 
+              show_column_names = T,
+              column_names_gp = gpar(fontsize = 9),
+              column_title = "",
+              column_title_gp = gpar(fontsize = 9),
+              row_title =NULL,
+              row_title_gp = gpar(fontsize = 9),
+              na_col = "white",
+              use_raster=F
+)
+pdf("../../../../RNA-06-AS-VvsH-DE-SE-Significant.IncLevel.zscore-Heatmap.pdf",width = 3,height = 6)
+ComplexHeatmap::draw(ht,
+                     annotation_legend_side = "right", 
+                     heatmap_legend_side = "right")
+dev.off()
+
 
 ############## TE #############
 setwd("/mnt/sdd/Data_Lei/RNA-seq/RNA/20250324_A22MH7MLT4_U3120_ZLZ/RawData")
 gtffile = fread("TEtranscripts_TE.gtf")
-# ...（中间处理省略）...
-deg <- read.csv("RNA-07-TE-EvsH.csv",row.names = 1)
-p21 <- ggplot(deg %>% filter(!is.na(padj)) %>% mutate(change=factor(change,levels=c("H","E","NOT"))),
-              aes(x = log2FoldChange, y = -log10(padj))) +
-  geom_point(aes(color = change), alpha = 0.8, size = 1.2) +
-  scale_color_manual(values = c(H = "#ab586c", E = "#9ebeb9", NOT = "grey90")) +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black", linewidth = 0.3) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
-  labs(x = "log2 fold change", y = "-log10(FDR)", title = "TE E vs H") +
-  ggthemes::theme_few() +
-  theme(axis.text = element_text(color='black',size=9),
-        axis.title = element_text(size=9),
-        panel.border = element_rect(fill=NA,color="black", size=1, linetype="solid"),
-        plot.title = element_text(hjust = 0.5, size = 9)) +
-  guides(color = guide_legend(override.aes = list(size=3)))
-ggsave(p21, filename="RNA-07-TE-EvsH.Volcano.pdf", height = 2.3, width = 3)
+# Process GTF file for TE info
+gtffile2 = gtffile %>% mutate(gene_id=str_remove_all(V9,"; transcr.*") %>% str_remove_all("gene_id ") %>% str_remove_all('"')) %>%
+  mutate(family_id=str_remove_all(V9,"; class.*")%>% str_remove_all(".*family_id ") %>% str_remove_all('"')) %>%
+  mutate(class_id=str_remove_all(V9,"; gene_name.*")%>% str_remove_all(".*class_id ") %>% str_remove_all('"')) %>%
+  mutate(transcript_id=str_remove_all(V9,"; family_id.*")%>% str_remove_all(".*transcript_id ") %>% str_remove_all('"')) %>%
+  arrange(gene_id,family_id,class_id) %>% unique()
+write.csv(gtffile2,file="TEtranscripts_TE-documents.csv",row.names = F)
+
+# Merge count tables
+dat = fread("ZLZ1-1.cntTable") %>% magrittr::set_colnames(c("TE","ZLZ1-1")) %>% filter(str_detect(TE,":")) %>% remove_rownames() %>%
+  column_to_rownames("TE")
+files = list.files("./",pattern="cntTable")
+for (file in files[2:9]) {
+  filename = file %>% str_remove_all("\\..*")
+  dat = fread(file) %>% magrittr::set_colnames(c("TE",filename)) %>% filter(str_detect(TE,":")) %>% remove_rownames() %>%
+    column_to_rownames("TE") %>%
+    cbind.data.frame(dat)
+}
+qsave(dat,file = "../../../../RNA-07-TE-TElocal.qs")
+
+###### Transcript => DEG => EvsH ######
+# Run DESeq2 for TE (EvsH)
+# [Code omitted - logic same as gene expression]
+# Save results to "RNA-07-TE-EvsH.csv"
+
+###### Transcript => DEG => VvsH ######
+# Run DESeq2 for TE (VvsH)
+# [Code omitted]
+# Save results to "RNA-07-TE-VvsH.csv"
+
+####- EvsH -####
+#### Volcano ####
+# Plot Volcano for TE EvsH
+# [Code omitted]
+
+#### Heatmap ####
+# Plot Heatmap for TE EvsH
+# [Code omitted]
+
+#### Annotation ####
+# Annotate TE locations using ChIPseeker
+# Plot bar chart of DE transcripts per class
+# Annotate peaks relative to TSS
+# Plot annotation stats (Pie/Bar)
+# Plot Pie chart of change (Hyper/Hypo) per annotation category
+
+####- VvsH -####
+# [Repeat plotting and annotation logic for VvsH]
+
 
 ############################ Methylation #################################
-############## Basic information ##############
+############## Basic informarion ##############
+# Plot BS conversion rate
 dat = fread("20250528B_trio-WGBS_report/src/Align/BSConvertRate_summary.xls")
-p214 = ggplot(dat, aes(`BSconvertRate(%)`, Sample, color=Sample)) +
-  geom_segment(aes(x=0, xend=`BSconvertRate(%)`, y=Sample, yend=Sample), color="black", linetype=2) +
-  geom_point(size=3) +
-  ggthemes::theme_few() +
+p214 = ggplot(dat,aes(`BSconvertRate(%)`,Sample,color=Sample))+
+  geom_segment(aes(x=0,xend=`BSconvertRate(%)`,y=Sample,yend = Sample),color="black",linetype=2)+
+  geom_point(size=3)+
+  ggthemes::theme_few()+
   theme(legend.position = "none",
-        axis.text = element_text(color = "black", size=9),
+        axis.text = element_text(color = "black"),
+        axis.text.x = element_text(size=9), 
+        axis.text.y = element_text(size=9),
         axis.title = element_text(size=9),
-        panel.border = element_rect(fill=NA, color="black", size=1.2, linetype="solid")) +
-  labs(x="BS convert rate (%)", y="") +
+        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+        legend.title = element_text(size=9),
+        plot.title = element_text(size=10,hjust=0.5),
+        legend.text = element_text(size=9))+
+  labs(x="BSconvertRate(%)",y="")+
   scale_color_manual(values = colorlist)
-ggsave(p214, filename="Methy-01-BasicInformation-BSconvert.pdf", height = 3, width = 2)
+ggsave(p214,filename="Methy-01-BasicInformarion-BSconvert.pdf",height = 3,width = 2)
+
+# Plot Average Depth
+dat = fread("20250528B_trio-WGBS_report/src/Coverage/Coverage/single_all_sitenum/sample_chr_AvrDepth.xls")
+p215 = dat %>% gather(Sample,Depth,contains("_")) %>% mutate(Chr=factor(Chr,levels=rev(dat$Chr))) %>%
+  ggplot(aes(Depth,Chr,color=Sample))+
+  geom_segment(aes(x=0,xend=Depth,y=Chr,yend = Chr),color="black",linetype=2)+
+  geom_point(size=3)+
+  ggthemes::theme_few()+
+  facet_nested(~ Sample , strip = ridiculous_strips,nest_line = element_line(linetype = 2),scales = "free_x")+
+  theme(legend.position = "none",
+        axis.text = element_text(color = "black"),
+        axis.text.x = element_text(size=9), 
+        axis.text.y = element_text(size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+        legend.title = element_text(size=9),
+        plot.title = element_text(size=10,hjust=0.5),
+        legend.text = element_text(size=9))+
+  labs(x="Depth",y="")+
+  scale_color_manual(values = colorlist)
+ggsave(p215,filename="Methy-01-BasicInformarion-Depth.pdf",height = 5,width = 6)
+
+# Plot Coverage
+# [Code omitted]
+
+# Plot MEC (Methylation Extraction Context?) / Coverage Depth
+# [Code omitted]
+
+############## PCA #############
+# Perform PCA on Methylation data
+dat = read.table("20250528B_trio-WGBS_report/src/PCA/PCAdata/mbin_CG.xls",sep="\t",row.names = 1,header = T)
+dat = na.omit(dat)
+dat <- data.frame(lapply(dat, function(x) as.numeric(as.character(x))),
+                      check.names = FALSE, stringsAsFactors = FALSE)
+dat[is.na(dat)] = 0
+pca.res <- FactoMineR::PCA(t(dat),             # Function requires rows as samples
+               scale.unit = TRUE,      # Scale by column
+               ncp = 5,                # Keep 5 dimensions
+               graph = FALSE)
+
+coord <- as.data.frame(pca.res$ind$coord) %>% mutate(Sample = rownames(.)) %>%
+  mutate(Group = str_remove_all(Sample,"_.*"))
+# Plot PCA
+# [Code omitted]
+
+############## MBin #############
+# Violin Plot for Methylation Levels
+# [Code omitted]
+
+# Heatmap for Methylation Levels
+# [Code omitted]
+
+# Line Plot for Methylation Levels across Genome
+# [Code omitted]
+
+############## Element #############
+# Plot Methylation Levels across Genomic Elements
+dat <- read.table("20250528B_trio-WGBS_report/src/Element/element_xls/Data_element_CG.txt",header = T,row.names = 1,sep="\t")
+colnames(dat) = R.utils::capitalize(colnames(dat))
+p1532 = dat %>% rownames_to_column("Sample") %>%
+  gather(Ele,Level,-Sample) %>% mutate(Group=str_remove_all(Sample,"_.*")) %>%
+  mutate(Ele=factor(Ele,levels=c("CDS","Exon",'Promoter',"Genebody","Intron","UTR5","UTR3",
+                                 "Intergeneic","LINE","SINE","LTR"))) %>%
+  ggplot(aes(Level,Sample,color=Group))+
+  geom_segment(aes(x=0,xend=Level,y=Sample,yend = Sample),color="black",linetype=2)+
+  geom_point(size=3)+
+  ggthemes::theme_few()+
+  facet_nested(~ Ele , strip = ridiculous_strips,nest_line = element_line(linetype = 2),scales = "free_x")+
+  theme(legend.position = "none",
+        axis.text = element_text(color = "black"),
+        axis.text.x = element_text(size=9,angle = 90,vjust = 0.5,hjust = 1), 
+        axis.text.y = element_text(size=9),
+        axis.title = element_text(size=9),
+        panel.border = element_rect(fill=NA,color="black", size=1.2, linetype="solid"),
+        legend.title = element_text(size=9),
+        plot.title = element_text(size=10,hjust=0.5),
+        legend.text = element_text(size=9))+
+  labs(x="Methylation level",y="")+
+  scale_color_manual(values = colorlist)+
+  scale_x_continuous(limits = c(0,0.4))
+ggsave(p1532,filename="Methy-02-Element-BasicInformation.pdf",height = 2.5,width = 8)
+
+############## Genebody + Flanking => Methylation level ##############
+# Heatmap for Gene Body Methylation
+# [Code omitted]
+
+############## g-MBin #############
+# Violin Plot
+# [Code omitted]
+# Heatmap
+# [Code omitted]
+# Line Plot
+# [Code omitted]
+
+############## g-Genebody + Flanking => Methylation level #############
+# Heatmap
+# [Code omitted]
 
 ############## DMR #############
+###### Overall ######
+#### HvsE ####
+# Volcano Plot
 dat <- fread("20250528B_trio-WGBS_report/src/DMR/DMRQV_CG.H_B_vs_E_B") %>%
-  mutate(delta_mC = H_B - E_B) %>%
-  mutate(change = if_else(QV > 0.05, "n.s.",
-                          if_else(delta_mC >= 0.1, "Hyper",
-                                  if_else(delta_mC <= -0.1, "Hypo", "n.s.")))) %>%
-  filter(numC > 3) %>%
-  mutate(change2 = if_else(change == "Hyper", "Hyper 19736",
-                           if_else(change == "Hypo", "Hypo 103773", "n.s."))) %>%
-  mutate(change2 = factor(change2, levels = c("Hyper 19736", "Hypo 103773", "n.s.")))
+  mutate(delta_mC=H_B-E_B) %>%
+  mutate(change=if_else(QV>0.05,"n.s.",if_else(delta_mC>=0.1,"Hyper",if_else(delta_mC<= -0.1,"Hypo","n.s.")))) %>% filter(numC > 3) %>%
+  mutate(change2 = if_else(change=="Hyper","Hyper 19736",if_else(change=="Hypo","Hypo 103773","n.s."))) %>%
+  mutate(change2=factor(change2,levels=c("Hyper 19736","Hypo 103773","n.s.")))
+# Plotting code
+# [Code omitted]
 
-p21 <- ggplot(dat, aes(x = delta_mC, y = -log10(QV))) +
-  geom_point(aes(color = change2), alpha = 0.8, size = 0.5) +
-  scale_color_manual(values = c("#ab586c", "#9ebeb9", "grey90")) +
-  geom_vline(xintercept = c(-0.1, 0.1), linetype = "dashed", color = "black", linewidth = 0.3) +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.3) +
-  labs(x = "delta CpG methylation level", y = "-log10(q value)", title = "H vs E") +
-  ggthemes::theme_few() +
-  theme(axis.text = element_text(color='black', size=9),
-        axis.title = element_text(size=9),
-        panel.border = element_rect(fill=NA, color="black", size=1, linetype="solid"),
-        plot.title = element_text(hjust = 0.5, size = 9)) +
-  guides(color = guide_legend(override.aes = list(size=3)))
-ggsave(p21, filename="Methy-05-DMR-HvsE-Overall.Volcano.pdf", height = 2.3, width = 3.6)
+# Distribution of DMR Length
+# [Code omitted]
 
-#### Methylation vs Expression Venn (H vs E, Promoter)
-DEG.H <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1) %>% filter(change == "H")
-DEG.E <- read.csv("RNA-01-DEGs-EvsH.DESeq2.csv", row.names = 1) %>% filter(change == "E")
+# Heatmap of DMRs
+# [Code omitted]
 
-peakAnno.H <- qread("Methy-05-DMR-HvsE-Hyper.Anno.qs")   # Hyper in H
-peakAnno.E <- qread("Methy-05-DMR-HvsE-Hypo.Anno.qs")    # Hypo  in H → Hyper in E
+#### VvsH ####
+# [Logic identical to HvsE]
 
-geneM.H <- peakAnno.H@anno %>% data.frame() %>% filter(str_detect(annotation, "Promoter")) %>% pull(geneId) %>% unique()
-geneM.E <- peakAnno.E@anno %>% data.frame() %>% filter(str_detect(annotation, "Promoter")) %>% pull(geneId) %>% unique()
+###### DMR => Annotation ######
+#### HvsE ####
+# Create BED files for Hyper/Hypo
+dat %>% filter(change == "Hyper") %>% dplyr::select(Chr,start,end) %>%
+  write.table(file = "Methy-05-DMR-HvsE-Hyper.bed",sep="\t",row.names = F,col.names = F,quote = F)
+dat %>% filter(change == "Hypo") %>% dplyr::select(Chr,start,end) %>%
+  write.table(file = "Methy-05-DMR-HvsE-Hypo.bed",sep="\t",row.names = F,col.names = F,quote = F)
+
+# Annotate Peaks
+library(GenomicFeatures)
+library(ChIPseeker)
+library(org.Bt.eg.db)
+txdb <- makeTxDbFromGFF("/mnt/sda/Database/Ref_bos_taurus/UCSC/bosTau9.ncbiRefSeq.gtf")
+A <- readPeakFile("Methy-05-DMR-HvsE-Hyper.bed")
+promoter <- getPromoters(TxDb=txdb, upstream=2000, downstream=2000)
+peakAnno = annotatePeak(A, tssRegion=c(-2000, 2000), TxDb=txdb,annoDb = 'org.Bt.eg.db')
+qsave(peakAnno,file = "Methy-05-DMR-HvsE-Hyper.Anno.qs")
+
+# Plot Annotation Stats
+# [Code omitted]
+
+# [Hypo annotation logic omitted - identical]
+
+#### VvsH ####
+# [Logic identical to HvsE]
+
+############# HvsE #############
+####### Promoter #######
+#### HvsE => Hyper ####
+# Enrichment analysis (GO/KEGG) for DMRs in Promoters
+# [Code omitted]
+
+#### HvsE => Hypo ####
+# Enrichment analysis (GO/KEGG) for DMRs in Promoters
+# [Code omitted]
+
+#### HvsE => Methy + Exp ####
+# Venn Diagram: Overlap of DEGs and DMR-Genes
+# Functional Enrichment of Overlaps
+# Heatmaps of Overlaps (Expression and Methylation)
+# [Code omitted]
+
+####### Genebody #######
+# [Logic identical to Promoter analysis: Hyper/Hypo Enrichment, Overlap with Expression]
+
+############# VvsH #############
+####### Promoter #######
+# [Logic identical to HvsE Promoter analysis]
+
+####### Genebody #######
+# [Logic identical to HvsE Genebody analysis]
+
+##############  #############
+# [Placeholder sections omitted]
+
+##############  #############
+# ZNF ChIP Download Preparation
+dat = fread("/mnt/sdf/ZNF-ChIP/HepG2-ENCODE/ref.tsv",header = F) %>%
+  mutate(V1=str_remove_all(V1,".*\\/")) %>% mutate(ID=str_remove_all(V1,"\\..*"))
+dat1 = fread("/mnt/sdf/ZNF-ChIP/HepG2-ENCODE/md5sum.txt",header = F) %>% 
+  mutate(V2=factor(V2,levels=dat$V1)) %>% arrange(V2)
+
+dat[dat1$V1 != dat$V2,] %>% 
+  write.table(file = "file-todownload.txt",sep="\t",col.names = F,row.names = F,quote = F)
+
+
+setwd("/mnt/sdb/Data_Sheng")
+
+# Proteomics overlap analysis
+AARS1_P53 = readxl::read_xlsx("AARS1 AND P53 MassSpec.xlsx",skip = 2) %>%
+  mutate(Proteins = str_remove_all(Proteins,".*\\|")%>%str_remove_all("_.*")) %>%
+  mutate(Proteins = if_else(Proteins=="RFA1","RPA1",Proteins))
+AARS1 = readxl::read_xlsx("idmapping_2025_10_19.xlsx")
+HBO1 = readxl::read_xlsx("HBO1.xlsx",skip = 1)
+NBS1 = readxl::read_xls("NBS1.xls",skip = 1)
+
+KEGG <- read.gmt("/mnt/sda/Database/msigdb/c2.cp.kegg.v7.5.1.symbols.gmt") %>%
+  filter(term == "KEGG_DNA_REPLICATION")
+
 
 library(ggvenn)
-vennlist <- list(E_H = DEG.H$genename,
-                 E_E = DEG.E$genename,
-                 M_H = geneM.H,
-                 M_E = geneM.E)
-Pvenn <- ggvenn(vennlist,
-                fill_color  = colorlist,
-                stroke_size = 0.5,
-                show_percentage = TRUE,
-                digits = 1)
-ggsave(Pvenn, filename = "Methy-06-HvsE-Promoter-Methy-Exp-Venn.pdf", height = 3, width = 5)
+vennlist <- list(AARS1_P53 = unique(AARS1_P53$Proteins),
+                 AARS1 = unique(AARS1$To),
+                 HBO1 = unique(HBO1$`Gene names`),
+                 NBS1 = unique(NBS1$`Gene name`),
+                 DNA_Replication = unique(KEGG$gene))
+P321 <- ggvenn(
+  data = vennlist,         # 
+  columns = NULL,           # 
+  show_elements = F,        # 
+  label_sep = "\n",         # 
+  show_percentage = T,      # 
+  digits = 1,               # 
+  fill_color = colorlist, 
+  fill_alpha = 0.5,         
+  stroke_color = "white",   
+  stroke_alpha = 0.5,       
+  stroke_size = 0.5,        
+  stroke_linetype = "solid", 
+  set_name_color = "black", 
+  set_name_size = 4,        
+  text_color = "black",     
+  text_size = 4             
+)
+ggsave(P321,filename="DNA_REPLICATION-RPA1-Lac.pdf",height = 3,width = 4)
 
-#### Extract 4-way intersections
-A <- vennlist$E_H
-B <- vennlist$E_E
-C <- vennlist$M_H
-D <- vennlist$M_E
-
-ABCD <- Reduce(intersect, list(A, B, C, D))   # 四组共有
-ABC  <- setdiff(Reduce(intersect, list(A, B, C)), D)
-ABD  <- setdiff(Reduce(intersect, list(A, B, D)), C)
-ACD  <- setdiff(Reduce(intersect, list(A, C, D)), B)
-BCD  <- setdiff(Reduce(intersect, list(B, C, D)), A)
-
-AB <- setdiff(intersect(A, B), union(C, D))
-AC <- setdiff(intersect(A, C), union(B, D))
-AD <- setdiff(intersect(A, D), union(B, C))
-BC <- setdiff(intersect(B, C), union(A, D))
-BD <- setdiff(intersect(B, D), union(A, C))
-CD <- setdiff(intersect(C, D), union(A, B))
-
-Aonly <- setdiff(A, union(B, union(C, D)))
-Bonly <- setdiff(B, union(A, union(C, D)))
-Conly <- setdiff(C, union(A, union(B, D)))
-Donly <- setdiff(D, union(A, union(B, C)))
-
-vennParts <- list(E_H_M_E  = ACD,   # 表达H + 甲基E
-                  E_E_M_H  = BCD,   # 表达E + 甲基H
-                  AllFour  = ABCD,
-                  E_H_only = Aonly,
-                  E_E_only = Bonly,
-                  M_H_only = Conly,
-                  M_E_only = Donly)
-qsave(vennParts, file = "Methy-06-HvsE-Promoter-Methy-Exp-Venn.qs")
-
-#### Heatmap: Expression + Methylation (E-H-M-E genes)
-genes <- vennParts$E_H_M_E
-
-# expression
-expr <- fread("20250620A_Smartseq2_cow_report/data/ExpressionSummary/All_TPM.txt") %>%
-  dplyr::select(genename, contains("_")) %>%
-  column_to_rownames("genename") %>%
-  dplyr::select(-gene_biotype, -E_B_4, -contains("V_"))
-expr <- expr[genes, ] %>% log2(1 + .)
-expr.z <- t(scale(t(expr)))
-
-# methylation
-dmr <- fread("20250528B_trio-WGBS_report/src/DMR/DMRQV_CG.H_B_vs_E_B") %>%
-  mutate(id = paste(Chr, start, end, sep = "_")) %>%
-  dplyr::select(id, H_B, E_B)
-
-peakAnno <- qread("Methy-05-DMR-HvsE-Hypo.Anno.qs")   # Hypo in H → Hyper in E
-prom <- peakAnno@anno %>% data.frame() %>%
-  filter(str_detect(annotation, "Promoter")) %>%
-  filter(geneId %in% genes) %>%
-  mutate(id = paste(seqnames, start - 1, end, sep = "_")) %>%
-  dplyr::select(id, geneId)
-
-meth <- dmr %>% inner_join(prom, by = "id") %>% arrange(geneId) %>% column_to_rownames("geneId")
-meth <- meth %>% dplyr::select(E_B, H_B)
-
-library(ComplexHeatmap)
-library(circlize)
-col_fun_expr  <- colorRamp2(c(-2, 0, 2), c("#5E4FA2", "white", "#b42e20"))
-col_fun_meth  <- colorRamp2(c(0, 0.8), c("#ffe4e1", "#8b0000"))
-
-ht_expr <- Heatmap(expr.z, name = "Z-score", col = col_fun_expr,
-                   cluster_rows = TRUE, cluster_columns = FALSE,
-                   show_row_names = FALSE, column_split = c("E","H"))
-ht_meth <- Heatmap(meth,  name = "mCpG",    col = col_fun_meth,
-                   cluster_rows = TRUE, cluster_columns = FALSE,
-                   show_row_names = FALSE)
-
-pdf("Methy-06-HvsE-Promoter-Methy-Exp-E_H_M_E-Heatmap.pdf", width = 4, height = 3)
-draw(ht_expr + ht_meth, gap = unit(5, "mm"))
-dev.off()
-
+intersect(unique(AARS1$To),unique(HBO1$`Gene names`)) %>%
+  intersect(unique(NBS1$`Gene name`)) %>% intersect(unique(AARS1_P53$Proteins)) %>%
+  sort()
